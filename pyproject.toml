@@ -1,0 +1,19 @@
+[project]
+name = "cs 675"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "JamesG9802",email = "61638683+JamesG9802@users.noreply.github.com"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+]
+
+[tool.poetry]
+packages = [{include = "cs 675", from = "src"}]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
