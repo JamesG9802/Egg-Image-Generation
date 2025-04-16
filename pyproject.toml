@@ -1,5 +1,5 @@
 [project]
-name = "cs 675"
+name = "egg_image_generation"
 version = "0.1.0"
 description = ""
 authors = [
@@ -8,10 +8,15 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "torch (>=2.6.0,<3.0.0)",
+    "matplotlib (>=3.10.1,<4.0.0)",
+    "torchvision (>=0.21.0,<0.22.0)",
+    "pandas (>=2.2.3,<3.0.0)",
+    "requests (>=2.32.3,<3.0.0)"
 ]
 
 [tool.poetry]
-packages = [{include = "cs 675", from = "src"}]
+packages = [{include = "egg_image_generation", from = "src"}]
 
 
 [build-system]

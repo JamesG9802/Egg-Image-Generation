@@ -1,0 +1,5 @@
+torch>=2.6.0,<3.0.0
+matplotlib>=3.10.1,<4.0.0
+torchvision>=0.21.0,<0.22.0
+pandas>=2.2.3,<3.0.0
+requests>=2.32.3,<3.0.0
