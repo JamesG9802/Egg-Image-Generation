@@ -56,16 +56,17 @@ def main():
     #   Resize images and normalize pixel values to [0, 1].
     transform: torchvision.transforms.Compose = transforms.Compose([
         transforms.Resize(image_sizes), 
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize(mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5))
     ])
 
     dataset: datasets.ImageFolder = datasets.ImageFolder(source_folder_path, transform)
 
     #   Using 80-20 train-test split
     train_length: int = int(0.8 * len(dataset))         #   80%
-    reamining_length: int = len(dataset) - train_length #   20%   
-    validation_length: int = reamining_length // 2      #   10%
-    test_length = reamining_length - validation_length  #   10%
+    remaining_length: int = len(dataset) - train_length #   20%   
+    validation_length: int = remaining_length // 2      #   10%
+    test_length = remaining_length - validation_length  #   10%
 
     train_dataset: torch.utils.data.Subset
     test_dataset: torch.utils.data.Subset
@@ -145,7 +146,7 @@ def main():
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Dropout(0.3),
                 nn.Linear(discriminator_layer_size[2], 1),
-                nn.Sigmoid()
+                # nn.Sigmoid()
             )
         
         def forward(self, x, labels):
@@ -169,26 +170,25 @@ def main():
     # Define discriminator
     discriminator: Discriminator = Discriminator(discriminator_layer_size, (3, *image_sizes), class_count).to(device)
 
-    criterion: nn.BCELoss = nn.BCELoss()
-
+    criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss()
     generator_optimizer: torch.optim.Adam = torch.optim.Adam(generator.parameters(), lr=learning_rate)
-    discriminator_optimizer: torch.optim.Adam = torch.optim.Adam(discriminator.parameters(), lr=learning_rate)
+    discriminator_optimizer: torch.optim.Adam = torch.optim.Adam(discriminator.parameters(), lr=2 * learning_rate)
 
     def generator_train_step(
             batch_size: int, 
             discriminator: Discriminator, 
             generator: Generator, 
             g_optimizer: torch.optim.Optimizer, 
-            criterion: nn.BCELoss
+            criterion: nn.BCEWithLogitsLoss
     ):
         # Init gradient
         g_optimizer.zero_grad()
         
         # Building z
-        z = Variable(torch.randn(batch_size, z_size)).to(device)
+        z = torch.randn(batch_size, z_size, device=device)
         
         # Building fake labels
-        fake_labels = Variable(torch.LongTensor(np.random.randint(0, class_count, batch_size))).to(device)
+        fake_labels = torch.randint(0, class_count, (batch_size,), device=device)
         
         # Generating fake images
         fake_images = generator(z, fake_labels)
@@ -205,7 +205,7 @@ def main():
         #  Optimizing generator
         g_optimizer.step()
         
-        return g_loss.data
+        return g_loss.item()
 
     def discriminator_train_step(
         batch_size: int, 
@@ -223,13 +223,13 @@ def main():
         real_validity = discriminator(real_images, labels)
         
         # Calculating discrimination loss (real images)
-        real_loss = criterion(real_validity, Variable(torch.ones(batch_size)).to(device))
+        real_loss = criterion(real_validity, torch.ones(batch_size, device=device))
         
         # Building z
-        z = Variable(torch.randn(batch_size, z_size)).to(device)
+        z = torch.randn(batch_size, z_size, device=device)
         
         # Building fake labels
-        fake_labels = Variable(torch.LongTensor(np.random.randint(0, class_count, batch_size))).to(device)
+        fake_labels = torch.LongTensor(np.random.randint(0, class_count, batch_size), device=device)
         
         # Generating fake images
         fake_images = generator(z, fake_labels)
@@ -238,7 +238,7 @@ def main():
         fake_validity = discriminator(fake_images, fake_labels)
         
         # Calculating discrimination loss (fake images)
-        fake_loss = criterion(fake_validity, Variable(torch.zeros(batch_size)).to(device))
+        fake_loss = criterion(fake_validity, torch.zeros(batch_size, device=device))
         
         # Sum two losses
         d_loss = real_loss + fake_loss
@@ -249,45 +249,52 @@ def main():
         # Optimizing discriminator
         d_optimizer.step()
         
-        return d_loss.data
+        return d_loss.item()
 
     for epoch in range(epochs):
         logger.info("Epoch {}".format(epoch + 1))
         
         for i, (images, labels) in enumerate(train_loader):
             # Train data
-            real_images = Variable(images).to(device)
-            labels = Variable(labels).to(device)
+            real_images = images.to(device)
+            labels = labels.to(device)
             
+            #   decaying random noise to to images
+            noise = torch.randn_like(real_images) * max(0, 0.1*(1 - epoch/epochs))
+
             # Set generator train
             generator.train()
             
             # Train discriminator
             d_loss = discriminator_train_step(len(real_images), discriminator, generator, discriminator_optimizer, 
-                criterion, real_images, labels
+                criterion, real_images + noise, labels
             )
             
             # Train generator
-            g_loss = generator_train_step(batch_size, discriminator, generator, generator_optimizer, criterion)
+            g_loss = generator_train_step(len(real_images), discriminator, generator, generator_optimizer, criterion)
         
         # Set generator eval
         generator.eval()
         
         logger.info(f'Generator Loss: {g_loss}, Discriminator Loss: {d_loss}')
         
-        # Building z 
-        z = Variable(torch.randn(class_count, z_size)).to(device)
+        # Visualize & checkpoint
+        if (epoch+1) % 5 == 0:
+            with torch.no_grad():
+                z = torch.randn(class_count, z_size, device=device)
+                labels = torch.arange(class_count, device=device)
+                sample_images = generator(z, labels)
+                grid = make_grid(sample_images, nrow=class_count//2, normalize=True)
+                plt.imshow(grid.permute(1,2,0).cpu()); plt.axis('off'); plt.show()
+            torch.save({
+                'G': generator.state_dict(),
+                'D': discriminator.state_dict(),
+                'g_opt': generator.state_dict(),
+                'd_opt': discriminator.state_dict(),
+            }, f"checkpoint_epoch_{epoch+1}.pth")
         
-        # Labels 0 ~ 8
-        labels = Variable(torch.LongTensor(np.arange(class_count))).to(device)
-        
-        # # Generating images
-        # sample_images = generator(z, labels)
-        
-        # grid = make_grid(sample_images, nrow=2, normalize=True).permute(1, 2, 0).numpy()
-        # plt.imshow(grid)
-        # plt.show()
     torch.save(generator.state_dict(), "generator")
+    torch.save(discriminator.state_dict(), "discriminator")
 
 if __name__ == "__main__":
     exit(main())
