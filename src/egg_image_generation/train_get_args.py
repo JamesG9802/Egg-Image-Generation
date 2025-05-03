@@ -63,5 +63,12 @@ def get_args() -> Namespace:
         help="The number of epochs to train on."
     )
 
+    parser.add_argument(
+        "-c",
+        "--checkpoint",
+        type=str,
+        help="The checkpoint to continue training with."
+    )
+
     return parser.parse_args()
 
