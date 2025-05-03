@@ -6,7 +6,7 @@ from typing import Final, List, Tuple
 from torchvision.utils import make_grid
 from matplotlib import pyplot as plt
 import torch
-from train import Generator
+from train import ConvGenerator, Generator
 from view_get_args import get_args
 
 logger = logging.getLogger(__name__)
@@ -37,9 +37,12 @@ def main():
     
     generator_layer_size: List[int] = [256, 512, 1024]
     generator: Generator = Generator(generator_layer_size, z_size, (3, *image_sizes), class_count).to(device)
+    
+    # generator_layer_size: List[int] = [64, 32]
+    # generator: ConvGenerator = ConvGenerator(generator_layer_size, z_size, (3, *image_sizes), class_count).to(device)
 
     
-    checkpoint = torch.load(args.model)
+    checkpoint = torch.load(model_path)
     generator.load_state_dict(checkpoint['G'])
 
     with torch.no_grad():

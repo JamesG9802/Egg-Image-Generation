@@ -115,54 +115,89 @@ class Discriminator(nn.Module):
         return out.squeeze()
 
 class ConvGenerator(nn.Module):
-    def __init__(self, generator_layer_size, z_size, img_shape, class_num):
+    def __init__(self, gen_channels, z_size, img_shape, class_num):
+        """
+        gen_channels: tuple of two ints, e.g. (128, 64)
+        z_size: size of your latent vector
+        img_shape: (channels, height, width)
+        class_num: number of classes for cGAN
+        """
         super().__init__()
-        self.z_size = z_size
-        self.img_shape = img_shape
-        self.channels, self.height, self.width = img_shape
-        self.class_num = class_num
+        C, H, W = img_shape
+        assert H % 4 == 0 and W % 4 == 0, "H and W must be divisible by 4"
+        init_h, init_w = H // 4, W // 4
+
+        # label embedding
         self.label_emb = nn.Embedding(class_num, class_num)
 
-        self.init_size = self.height // 4
-        self.project = nn.Linear(z_size + class_num, generator_layer_size[0] * self.init_size * self.init_size)
-
-        self.model = nn.Sequential(
-            nn.BatchNorm2d(generator_layer_size[0]),
-            nn.ConvTranspose2d(generator_layer_size[0], generator_layer_size[1], 4, 2, 1),
-            nn.BatchNorm2d(generator_layer_size[1]),
+        # project z+label into a low-res feature map
+        self.project = nn.Sequential(
+            nn.Linear(z_size + class_num, gen_channels[0] * init_h * init_w),
+            nn.BatchNorm1d(gen_channels[0] * init_h * init_w),
             nn.ReLU(True),
-            nn.ConvTranspose2d(generator_layer_size[1], self.channels, 4, 2, 1),
-            nn.Tanh()
         )
 
-    def forward(self, z, labels):
-        c = self.label_emb(labels)
-        x = torch.cat([z, c], dim=1)
-        x = self.project(x).view(-1, self.model[0].num_features, self.init_size, self.init_size)
-        return self.model(x)
+        # Upsample + conv to avoid checkerboard
+        self.upsample_blocks = nn.Sequential(
+            # Upsample to (2×init_h, 2×init_w)
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(gen_channels[0], gen_channels[1], kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(gen_channels[1]),
+            nn.ReLU(True),
+            # Upsample to (H, W)
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(gen_channels[1], C, kernel_size=3, stride=1, padding=1),
+            nn.Tanh(),
+        )
 
+        self.init_h, self.init_w = init_h, init_w
+
+    def forward(self, z, labels):
+        # z: [B, z_size], labels: [B]
+        emb = self.label_emb(labels)                # [B, class_num]
+        x = torch.cat([z, emb], dim=1)              # [B, z_size + class_num]
+        x = self.project(x)                         # [B, ch0*init_h*init_w]
+        x = x.view(-1,
+                   self.upsample_blocks[1].in_channels,
+                   self.init_h,
+                   self.init_w)                   # [B, ch0, init_h, init_w]
+        img = self.upsample_blocks(x)               # [B, C, H, W]
+        return img
 class ConvDiscriminator(nn.Module):
     def __init__(self, discriminator_layer_size, img_shape, class_num):
         super().__init__()
-        self.img_shape = img_shape
+        # store the exact img_shape tuple so we never mix up H vs W
+        self.img_shape = img_shape            # (C, H, W)
         self.channels, self.height, self.width = img_shape
+
         self.class_num = class_num
+        # embed into exactly C*H*W so we can reshape back to (C, H, W)
         self.label_emb = nn.Embedding(class_num, self.channels * self.height * self.width)
 
         self.model = nn.Sequential(
-            nn.Conv2d(self.channels * 2, discriminator_layer_size[0], 4, 2, 1),
+            nn.Conv2d(self.channels * 2, discriminator_layer_size[0], kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(discriminator_layer_size[0], discriminator_layer_size[1], 4, 2, 1),
+
+            nn.Conv2d(discriminator_layer_size[0], discriminator_layer_size[1], kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(discriminator_layer_size[1]),
             nn.LeakyReLU(0.2, inplace=True),
+
             nn.Flatten(),
             nn.Linear((self.height // 4) * (self.width // 4) * discriminator_layer_size[1], 1)
         )
 
     def forward(self, x, labels):
-        c = self.label_emb(labels).view(-1, self.channels, self.height, self.width)
-        x = torch.cat([x, c], dim=1)
-        return self.model(x).squeeze()
+        # x: [B, C, H, W]
+        B, C, H, W = x.shape
+        # use the stored img_shape for embedding reshape
+        _, H0, W0 = self.img_shape
+
+        emb = self.label_emb(labels)           # [B, C*H0*W0]
+        emb = emb.view(B, C, H0, W0)           # [B, C, H0, W0]
+
+        x = torch.cat([x, emb], dim=1)         # [B, 2*C, H, W]
+        validity = self.model(x)               # [B, 1]
+        return validity.view(-1)               # [B]
 
 def main():
     args = get_args()
@@ -177,6 +212,9 @@ def main():
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     generator_layer_size: List[int] = [256, 512, 1024]
     discriminator_layer_size: List[int] = [1024, 512, 256]
+    
+    # generator_layer_size: List[int] = [64, 32]
+    # discriminator_layer_size: List[int] = [32, 64]
 
     if seed != None:
         torch.manual_seed(seed) 
@@ -221,6 +259,15 @@ def main():
     # Define discriminator
     discriminator: Discriminator = Discriminator(discriminator_layer_size, (3, *image_sizes), class_count).to(device)
 
+
+    # generator: Generator = ConvGenerator(generator_layer_size, z_size, (3, *image_sizes), class_count).to(device)
+    # discriminator: Discriminator = ConvDiscriminator(discriminator_layer_size, (3, *image_sizes), class_count).to(device)
+
+
+    criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss()
+    generator_optimizer: torch.optim.Adam = torch.optim.Adam(generator.parameters(), lr=learning_rate)
+    discriminator_optimizer: torch.optim.Adam = torch.optim.Adam(discriminator.parameters(), lr=learning_rate/2)
+
     starting_epoch: int = 0
 
     if args.checkpoint != None:
@@ -228,6 +275,8 @@ def main():
         checkpoint = torch.load(args.checkpoint)
         generator.load_state_dict(checkpoint["G"])
         discriminator.load_state_dict(checkpoint["D"])
+        generator_optimizer.load_state_dict(checkpoint["g_opt"])
+        discriminator_optimizer.load_state_dict(checkpoint["d_opt"])
 
         match = re.search(r"checkpoint_epoch_(\d+)\.pth", args.checkpoint)
         if match:
@@ -236,9 +285,6 @@ def main():
             logger.info("Make sure checkpoint file name is in the format 'checkpoint_epoch_x.pth'.")
             exit(1)
 
-    criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss()
-    generator_optimizer: torch.optim.Adam = torch.optim.Adam(generator.parameters(), lr=learning_rate)
-    discriminator_optimizer: torch.optim.Adam = torch.optim.Adam(discriminator.parameters(), lr=2 * learning_rate)
 
     best_val_loss = float('inf')
     patience = 10  # Number of epochs to wait for improvement
@@ -411,8 +457,8 @@ def main():
     torch.save({
         'G': generator.state_dict(),
         'D': discriminator.state_dict(),
-        'g_opt': generator.state_dict(),
-        'd_opt': discriminator.state_dict(),
+        'g_opt': generator_optimizer.state_dict(),
+        'd_opt': discriminator_optimizer.state_dict(),
     }, f"checkpoint_epoch_{epoch+1}.pth")
     # torch.save(generator.state_dict(), "generator")
     # torch.save(discriminator.state_dict(), "discriminator")
